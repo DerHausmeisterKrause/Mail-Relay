@@ -1,0 +1,27 @@
+<!doctype html>
+<html lang="de">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>Mail Relay HA</title>
+  <style>
+    :root{--bg:#0b1220;--card:#121a2b;--muted:#90a0c0;--txt:#edf2ff;--accent:#5aa6ff;--ok:#38c172}
+    *{box-sizing:border-box} body{margin:0;font-family:Inter,system-ui,Arial;background:linear-gradient(180deg,#0a1020,#0f1830);color:var(--txt)}
+    .wrap{max-width:1200px;margin:24px auto;padding:0 16px}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(260px,1fr));gap:12px}
+    .card{background:var(--card);border:1px solid #223254;border-radius:14px;padding:14px;box-shadow:0 4px 20px rgba(0,0,0,.25)}
+    h1,h2,h3{margin:.2rem 0 1rem} .muted{color:var(--muted);font-size:.9rem}
+    input,select,textarea,button{width:100%;margin:.25rem 0 .6rem;padding:.65rem;border-radius:10px;border:1px solid #2a3b62;background:#0c1426;color:var(--txt)}
+    button{background:var(--accent);border:none;color:#fff;font-weight:600;cursor:pointer} button.secondary{background:#223254}
+    .kpi{font-size:1.35rem;font-weight:700} .row{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+    pre{white-space:pre-wrap;background:#0c1426;padding:10px;border-radius:10px;border:1px solid #2a3b62}
+  </style>
+</head>
+<body>
+  <div class="wrap">
+    <h1>Mail Relay HA Control Plane</h1>
+    <p class="muted">Zero-Touch Start: clone + docker compose up -d. Danach alles in dieser GUI konfigurieren.</p>
+    <div id="app"></div>
+  </div>
+<script src="app.js"></script>
+</body>
+</html>

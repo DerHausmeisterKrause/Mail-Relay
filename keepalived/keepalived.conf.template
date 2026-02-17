@@ -1,0 +1,25 @@
+vrrp_script chk_backend {
+  script "/scripts/check_backend.sh"
+  interval 2
+  timeout 1
+  rise 2
+  fall 2
+}
+
+vrrp_instance VI_1 {
+  state BACKUP
+  interface ${VRRP_INTERFACE}
+  virtual_router_id ${VRRP_ROUTER_ID}
+  priority ${VRRP_PRIORITY}
+  advert_int 1
+  authentication {
+    auth_type PASS
+    auth_pass ${VRRP_AUTH_PASS}
+  }
+  virtual_ipaddress {
+    ${VIP_ADDRESS}/24 dev ${VRRP_INTERFACE}
+  }
+  track_script {
+    chk_backend
+  }
+}
