@@ -1,0 +1,556 @@
+import csv
+import io
+import json
+import os
+import socket
+import subprocess
+import threading
+import time
+from datetime import datetime, timedelta
+from pathlib import Path
+
+import requests
+from fastapi import Depends, FastAPI, Header, HTTPException, Query
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
+from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
+from sqlalchemy import desc, func, text
+from sqlalchemy.orm import Session
+
+from .auth import create_token, decode_token, hash_password, verify_password
+from .db import get_db
+from .models import AuditLog, ClusterLock, ClusterSetting, ConfigVersion, DomainPolicy, MailLog, RelayRoute, RejectionLog, User
+from .schemas import ClusterSettingsRequest, DomainRequest, LoginRequest, RouteRequest, UserCreateRequest, UserUpdateRequest
+
+app = FastAPI(title="Mail Relay HA API")
+security = HTTPBearer()
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_methods=["*"], allow_headers=["*"])
+GENERATED = Path("/generated")
+GENERATED.mkdir(parents=True, exist_ok=True)
+RUNTIME = Path("/runtime")
+RUNTIME.mkdir(parents=True, exist_ok=True)
+CERT_DIR = Path("/certs")
+CERT_DIR.mkdir(parents=True, exist_ok=True)
+
+
+
+
+def migrate_schema_if_needed(db: Session):
+    # Handles upgrades on existing postgres volumes where init.sql is not re-run.
+    statements = [
+        "ALTER TABLE cluster_settings ADD COLUMN IF NOT EXISTS reject_response_message TEXT NOT NULL DEFAULT 'Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen.'"
+    ]
+    for stmt in statements:
+        try:
+            db.execute(text(stmt))
+            db.commit()
+        except Exception:
+            db.rollback()
+
+def ensure_cluster_settings(db: Session):
+    row = db.query(ClusterSetting).order_by(desc(ClusterSetting.id)).first()
+    if row:
+        return row
+    row = ClusterSetting(
+        node_id=os.getenv("NODE_ID", "node-a"),
+        node_ip=os.getenv("NODE_IP", "10.0.0.11"),
+        peer_node_ip=os.getenv("PEER_NODE_IP", "10.0.0.12"),
+        vip_address=os.getenv("VIP_ADDRESS", "10.0.0.50"),
+        vrrp_priority=int(os.getenv("VRRP_PRIORITY", "100")),
+        cluster_mode=os.getenv("CLUSTER_MODE", "standalone"),
+        master_api_url=os.getenv("MASTER_API_URL", ""),
+        master_api_token=os.getenv("MASTER_API_TOKEN", ""),
+        peer_ssh_user=os.getenv("PEER_SSH_USER", "root"),
+        reject_response_message=os.getenv("REJECT_RESPONSE_MESSAGE", "Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen."),
+    )
+    db.add(row)
+    db.commit()
+    db.refresh(row)
+    return row
+
+
+def write_runtime_artifacts(settings: ClusterSetting):
+    (RUNTIME / "cluster.json").write_text(
+        json.dumps(
+            {
+                "node_id": settings.node_id,
+                "node_ip": settings.node_ip,
+                "peer_node_ip": settings.peer_node_ip,
+                "vip_address": settings.vip_address,
+                "vrrp_priority": settings.vrrp_priority,
+                "cluster_mode": settings.cluster_mode,
+                "master_api_url": settings.master_api_url,
+                "master_api_token": settings.master_api_token,
+                "peer_ssh_user": settings.peer_ssh_user,
+                "reject_response_message": settings.reject_response_message,
+                "vrrp_interface": os.getenv("VRRP_INTERFACE", "eth0"),
+                "vrrp_router_id": int(os.getenv("VRRP_ROUTER_ID", "51")),
+                "vrrp_auth_pass": os.getenv("VRRP_AUTH_PASS", "changevrrppass"),
+            },
+            indent=2,
+        )
+    )
+    if settings.ssh_private_key:
+        p = RUNTIME / "id_rsa"
+        p.write_text(settings.ssh_private_key)
+        os.chmod(p, 0o600)
+    if settings.ssh_known_hosts:
+        (RUNTIME / "known_hosts").write_text(settings.ssh_known_hosts)
+    if settings.tls_crt and settings.tls_key:
+        (CERT_DIR / "tls.crt").write_text(settings.tls_crt)
+        (CERT_DIR / "tls.key").write_text(settings.tls_key)
+
+
+def get_effective_cluster_settings(db: Session):
+    s = ensure_cluster_settings(db)
+    return {
+        "node_id": s.node_id,
+        "node_ip": s.node_ip,
+        "peer_node_ip": s.peer_node_ip,
+        "vip_address": s.vip_address,
+        "vrrp_priority": s.vrrp_priority,
+        "cluster_mode": s.cluster_mode,
+        "master_api_url": s.master_api_url,
+        "master_api_token": s.master_api_token,
+        "peer_ssh_user": s.peer_ssh_user,
+        "reject_response_message": s.reject_response_message,
+        "has_tls": bool(s.tls_crt and s.tls_key),
+        "has_ssh_key": bool(s.ssh_private_key),
+    }
+
+
+
+
+def seed_demo_mails(db: Session):
+    if db.query(MailLog).count() > 0 or db.query(RejectionLog).count() > 0:
+        return
+    now = datetime.utcnow()
+    demo = [
+        ("ok", "alice@allowed.tld", "user1@target.tld", "10.10.0.11", "relayA", True),
+        ("ok", "bob@allowed.tld", "user2@target.tld", "10.10.0.12", "relayA", False),
+        ("deferred", "carol@allowed.tld", "user3@target.tld", "10.10.0.13", "relayB", True),
+        ("ok", "dave@allowed.tld", "user4@target.tld", "10.10.0.14", "relayA", True),
+        ("bounced", "eve@allowed.tld", "user5@target.tld", "10.10.0.15", "relayB", False),
+        ("ok", "frank@allowed.tld", "user6@target.tld", "10.10.0.16", "relayA", True),
+        ("deferred", "gina@allowed.tld", "user7@target.tld", "10.10.0.17", "relayB", False),
+        ("ok", "henry@allowed.tld", "user8@target.tld", "10.10.0.18", "relayA", True),
+        ("ok", "ivy@allowed.tld", "user9@target.tld", "10.10.0.19", "relayA", False),
+        ("bounced", "jack@allowed.tld", "user10@target.tld", "10.10.0.20", "relayB", True),
+    ]
+    for i, row in enumerate(demo):
+        st, snd, rcpt, ip, tgt, tls = row
+        db.add(MailLog(sender=snd, recipient=rcpt, client_ip=ip, status=st, target=tgt, tls_used=tls, smtp_code="250" if st=="ok" else "451" if st=="deferred" else "550", smtp_text="queued for delivery" if st=="ok" else "temporary lookup failure" if st=="deferred" else "relay target rejected message", created_at=now - timedelta(minutes=i*7)))
+    rejects = [
+        ("spam@bad.tld", "user@target.tld", "10.20.0.2", "Sender domain blocked by policy"),
+        ("unknown@bad.tld", "ops@target.tld", "10.20.0.3", "Invalid envelope sender domain"),
+        ("noreply@bad.tld", "sales@target.tld", "10.20.0.4", "Domain not in whitelist"),
+    ]
+    for i, r in enumerate(rejects):
+        db.add(RejectionLog(sender=r[0], recipient=r[1], client_ip=r[2], reason=r[3], created_at=now - timedelta(minutes=5+i*11)))
+    db.commit()
+
+def init_admin(db: Session):
+    if db.query(User).count() == 0:
+        db.add(
+            User(
+                username=os.getenv("ADMIN_DEFAULT_USER", "admin"),
+                password_hash=hash_password(os.getenv("ADMIN_DEFAULT_PASSWORD", "Admin123")),
+                role="Admin",
+                must_change_password=os.getenv("ADMIN_FORCE_PASSWORD_CHANGE", "true").lower() == "true",
+            )
+        )
+        db.commit()
+
+
+@app.on_event("startup")
+def startup():
+    db = next(get_db())
+    migrate_schema_if_needed(db)
+    init_admin(db)
+    seed_demo_mails(db)
+    write_runtime_artifacts(ensure_cluster_settings(db))
+    threading.Thread(target=sync_from_master_loop, daemon=True).start()
+    threading.Thread(target=retention_loop, daemon=True).start()
+
+
+def sync_from_master_loop():
+    interval = int(os.getenv("SYNC_INTERVAL_SECONDS", "5"))
+    while True:
+        try:
+            db = next(get_db())
+            cfg = get_effective_cluster_settings(db)
+            if cfg["cluster_mode"].lower() != "slave":
+                time.sleep(interval)
+                continue
+            if not cfg.get("master_api_url") or not cfg.get("master_api_token"):
+                time.sleep(interval)
+                continue
+            latest = db.query(func.max(ConfigVersion.version)).scalar() or 0
+            r = requests.get(
+                f"{cfg['master_api_url']}/config/export",
+                headers={"x-api-token": cfg["master_api_token"]},
+                timeout=3,
+                verify=False,
+            )
+            if r.ok:
+                payload = r.json()
+                if payload.get("version", 0) > latest:
+                    d = payload.get("data", {})
+                    db.query(DomainPolicy).delete()
+                    db.query(RelayRoute).delete()
+                    for dm in d.get("domains", []):
+                        db.add(DomainPolicy(domain=dm, enabled=True))
+                    for rr in d.get("routes", []):
+                        db.add(RelayRoute(**rr))
+                    db.add(ConfigVersion(version=payload["version"], data=json.dumps(d), created_by="master-sync", applied=False))
+                    db.commit()
+                    render_postfix(db)
+                    (GENERATED / ".reload").touch()
+        except Exception:
+            pass
+        time.sleep(interval)
+
+
+def retention_loop():
+    while True:
+        try:
+            db = next(get_db())
+            cutoff = datetime.utcnow() - timedelta(days=int(os.getenv("RETENTION_DAYS", "14")))
+            db.query(MailLog).filter(MailLog.created_at < cutoff).delete()
+            db.query(RejectionLog).filter(RejectionLog.created_at < cutoff).delete()
+            db.commit()
+        except Exception:
+            pass
+        time.sleep(3600)
+
+
+def current_user(creds: HTTPAuthorizationCredentials = Depends(security), db: Session = Depends(get_db)):
+    payload = decode_token(creds.credentials)
+    u = db.query(User).filter(User.username == payload["sub"]).first()
+    if not u:
+        raise HTTPException(status_code=401, detail="user not found")
+    return u
+
+
+def require_role(user: User, roles: list[str]):
+    if user.role not in roles:
+        raise HTTPException(status_code=403, detail="insufficient role")
+
+
+def snapshot_config(db: Session, actor: str):
+    domains = [d.domain for d in db.query(DomainPolicy).filter(DomainPolicy.enabled.is_(True)).all()]
+    routes = [
+        {
+            "sender_domain": r.sender_domain,
+            "target_host": r.target_host,
+            "target_port": r.target_port,
+            "tls_mode": r.tls_mode,
+            "tls_verify": r.tls_verify,
+            "auth_username": r.auth_username,
+            "auth_password": r.auth_password,
+        }
+        for r in db.query(RelayRoute).all()
+    ]
+    v = (db.query(func.max(ConfigVersion.version)).scalar() or 0) + 1
+    db.add(ConfigVersion(version=v, data=json.dumps({"domains": domains, "routes": routes}), created_by=actor))
+    db.add(AuditLog(actor=actor, action="config_saved", payload=f"version={v}"))
+    db.commit()
+    return v
+
+
+def render_postfix(db: Session):
+    domains = [d.domain for d in db.query(DomainPolicy).filter(DomainPolicy.enabled.is_(True)).all()]
+    routes = db.query(RelayRoute).all()
+
+    allowed_sender_lines = [f"{domain} OK" for domain in domains if domain]
+    sender_relay_lines = [f"@{r.sender_domain} [{r.target_host}]:{r.target_port}" for r in routes]
+    transport_lines = [f"{r.sender_domain} smtp:[{r.target_host}]:{r.target_port}" for r in routes]
+    sasl_passwd_lines = [f"[{r.target_host}]:{r.target_port} {r.auth_username}:{r.auth_password}" for r in routes if r.auth_username]
+
+    (GENERATED / "allowed_sender_domains").write_text("\n".join(allowed_sender_lines) + ("\n" if allowed_sender_lines else ""))
+    (GENERATED / "sender_relay").write_text("\n".join(sender_relay_lines) + ("\n" if sender_relay_lines else ""))
+    (GENERATED / "transport").write_text("\n".join(transport_lines) + ("\n" if transport_lines else ""))
+    (GENERATED / "sasl_passwd").write_text("\n".join(sasl_passwd_lines) + ("\n" if sasl_passwd_lines else ""))
+    msg = get_effective_cluster_settings(db).get("reject_response_message") or "Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen."
+    (GENERATED / "reject_response_message").write_text(msg.strip() + "\n")
+
+
+@app.post("/api/login")
+def login(req: LoginRequest, db: Session = Depends(get_db)):
+    u = db.query(User).filter(User.username == req.username).first()
+    if not u or not verify_password(req.password, u.password_hash):
+        raise HTTPException(status_code=401, detail="invalid credentials")
+    return {"token": create_token(u.username, u.role), "role": u.role, "must_change_password": u.must_change_password}
+
+
+
+
+@app.get("/api/users")
+def list_users(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin"])
+    rows = db.query(User).order_by(User.username.asc()).all()
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role,
+            "must_change_password": u.must_change_password,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in rows
+    ]
+
+
+@app.post("/api/users")
+def create_user(req: UserCreateRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin"])
+    if req.role not in ["Admin", "Operator", "ReadOnly"]:
+        raise HTTPException(status_code=400, detail="invalid role")
+    username = req.username.strip()
+    if not username or len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="username/password invalid")
+    if db.query(User).filter(User.username == username).first():
+        raise HTTPException(status_code=409, detail="user already exists")
+    db.add(User(username=username, password_hash=hash_password(req.password), role=req.role, must_change_password=True))
+    db.add(AuditLog(actor=user.username, action="user_created", payload=f"username={username};role={req.role}"))
+    db.commit()
+    return {"status": "created", "username": username}
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: int, req: UserUpdateRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin"])
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="user not found")
+    if target.id == user.id and req.role and req.role != "Admin":
+        raise HTTPException(status_code=400, detail="cannot downgrade own admin role")
+
+    updates = []
+    if req.role is not None:
+        if req.role not in ["Admin", "Operator", "ReadOnly"]:
+            raise HTTPException(status_code=400, detail="invalid role")
+        target.role = req.role
+        updates.append(f"role={req.role}")
+    if req.password is not None:
+        if len(req.password) < 8:
+            raise HTTPException(status_code=400, detail="password too short")
+        target.password_hash = hash_password(req.password)
+        target.must_change_password = True if req.must_change_password is None else req.must_change_password
+        updates.append("password_reset=true")
+    if req.must_change_password is not None:
+        target.must_change_password = req.must_change_password
+        updates.append(f"must_change_password={req.must_change_password}")
+
+    db.add(AuditLog(actor=user.username, action="user_updated", payload=f"username={target.username};" + ",".join(updates)))
+    db.commit()
+    return {"status": "updated", "id": target.id}
+
+
+@app.get("/api/config")
+def get_config(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    return {
+        "mode": get_effective_cluster_settings(db)["cluster_mode"],
+        "routes": [r.__dict__ for r in db.query(RelayRoute).all()],
+        "domains": [d.__dict__ for d in db.query(DomainPolicy).all()],
+        "latest_version": db.query(func.max(ConfigVersion.version)).scalar() or 0,
+    }
+
+
+@app.post("/api/domains")
+def add_domain(req: DomainRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin", "Operator"])
+    db.add(DomainPolicy(domain=req.domain, enabled=True))
+    db.commit()
+    return {"status": "saved", "version": snapshot_config(db, user.username)}
+
+
+@app.post("/api/routes")
+def add_route(req: RouteRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin", "Operator"])
+    db.add(RelayRoute(**req.model_dump()))
+    db.commit()
+    return {"status": "saved", "version": snapshot_config(db, user.username)}
+
+
+@app.post("/api/config/test")
+def config_test(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    render_postfix(db)
+    return {"ok": True}
+
+
+@app.post("/api/config/apply")
+def config_apply(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin", "Operator"])
+    render_postfix(db)
+    subprocess.run(["/bin/sh", "-c", "touch /generated/.reload"], capture_output=True, text=True)
+    db.add(AuditLog(actor=user.username, action="config_applied", payload="reload"))
+    db.commit()
+    return {"status": "applied"}
+
+
+@app.get("/api/dashboard")
+def dashboard(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    n = datetime.utcnow()
+    rejected = db.query(RejectionLog).order_by(desc(RejectionLog.created_at)).limit(100).all()
+    return {
+        "processed_24h": db.query(MailLog).filter(MailLog.created_at >= n - timedelta(hours=24)).count(),
+        "processed_1h": db.query(MailLog).filter(MailLog.created_at >= n - timedelta(hours=1)).count(),
+        "rejected_16h": db.query(RejectionLog).filter(RejectionLog.created_at >= n - timedelta(hours=16)).count(),
+        "queue_size": 0,
+        "active_node": get_effective_cluster_settings(db)["node_id"],
+        "rejected_last_100": [
+            {"sender": r.sender, "recipient": r.recipient, "reason": r.reason, "created_at": r.created_at.isoformat()} for r in rejected
+        ],
+    }
+
+
+@app.get("/api/mail/search")
+def search_mail(
+    user: User = Depends(current_user),
+    db: Session = Depends(get_db),
+    sender: str | None = None,
+    recipient: str | None = None,
+    ip: str | None = None,
+    status: str | None = None,
+    target: str | None = None,
+    tls: bool | None = None,
+    hours: int = Query(default=24, ge=1, le=24 * 30),
+    limit: int = Query(default=500, ge=1, le=5000),
+):
+    q = db.query(MailLog).filter(MailLog.created_at >= datetime.utcnow() - timedelta(hours=hours))
+    if sender:
+        q = q.filter(MailLog.sender.ilike(f"%{sender}%"))
+    if recipient:
+        q = q.filter(MailLog.recipient.ilike(f"%{recipient}%"))
+    if ip:
+        q = q.filter(MailLog.client_ip.ilike(f"%{ip}%"))
+    if status:
+        q = q.filter(MailLog.status.ilike(f"%{status}%"))
+    if target:
+        q = q.filter(MailLog.target.ilike(f"%{target}%"))
+    if tls is not None:
+        q = q.filter(MailLog.tls_used.is_(tls))
+    rows = q.order_by(desc(MailLog.created_at)).limit(limit).all()
+    return [
+        {
+            "sender": r.sender,
+            "recipient": r.recipient,
+            "ip": r.client_ip,
+            "status": r.status,
+            "target": r.target,
+            "tls": r.tls_used,
+            "timestamp": r.created_at.isoformat(),
+            "smtp_code": r.smtp_code,
+            "smtp_text": r.smtp_text,
+        }
+        for r in rows
+    ]
+
+
+@app.get("/api/mail/export.csv")
+def export_mail_csv(user: User = Depends(current_user), db: Session = Depends(get_db), hours: int = 24):
+    rows = (
+        db.query(MailLog)
+        .filter(MailLog.created_at >= datetime.utcnow() - timedelta(hours=hours))
+        .order_by(desc(MailLog.created_at))
+        .limit(10000)
+        .all()
+    )
+    out = io.StringIO()
+    w = csv.writer(out)
+    w.writerow(["timestamp", "sender", "recipient", "ip", "status", "target", "tls", "smtp_code", "smtp_text"])
+    for r in rows:
+        w.writerow([r.created_at.isoformat(), r.sender, r.recipient, r.client_ip, r.status, r.target, r.tls_used, r.smtp_code, r.smtp_text])
+    return StreamingResponse(iter([out.getvalue()]), media_type="text/csv", headers={"Content-Disposition": "attachment; filename=mail-log.csv"})
+
+
+@app.get("/api/config/export")
+def export_config(x_api_token: str = Header(default=""), db: Session = Depends(get_db)):
+    if x_api_token != os.getenv("API_TOKEN", "bootstrap-token"):
+        raise HTTPException(status_code=403, detail="forbidden")
+    latest = db.query(ConfigVersion).order_by(desc(ConfigVersion.version)).first()
+    return {"version": 0, "data": {"domains": [], "routes": []}} if not latest else {"version": latest.version, "data": json.loads(latest.data)}
+
+
+@app.post("/api/sync-lock/acquire")
+def acquire_lock(payload: dict, x_api_token: str = Header(default=""), db: Session = Depends(get_db)):
+    if x_api_token != os.getenv("API_TOKEN", "bootstrap-token"):
+        raise HTTPException(status_code=403, detail="forbidden")
+    if not payload.get("is_vip_owner", False):
+        raise HTTPException(status_code=400, detail="not active")
+    node_id = payload.get("node_id", "unknown")
+    now = datetime.utcnow()
+    ex = db.query(ClusterLock).filter(ClusterLock.lock_name == "queue_sync").first()
+    if ex and ex.node_id != node_id and (now - ex.heartbeat).total_seconds() < 20:
+        db.add(AuditLog(actor=node_id, action="split_brain_detected", payload=json.dumps(payload)))
+        db.commit()
+        raise HTTPException(status_code=409, detail="lock owned by other node")
+    if ex:
+        ex.node_id = node_id
+        ex.heartbeat = now
+    else:
+        db.add(ClusterLock(lock_name="queue_sync", node_id=node_id, heartbeat=now))
+    db.commit()
+    return {"status": "ok"}
+
+
+@app.get("/api/cluster/settings")
+def get_cluster_settings(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin", "Operator", "ReadOnly"])
+    return get_effective_cluster_settings(db)
+
+
+@app.post("/api/cluster/settings")
+def set_cluster_settings(req: ClusterSettingsRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin"])
+    r = ensure_cluster_settings(db)
+    for k, v in req.model_dump().items():
+        if v is not None:
+            setattr(r, k, v)
+    r.updated_at = datetime.utcnow()
+    write_runtime_artifacts(r)
+    render_postfix(db)
+    (GENERATED / ".reload").touch()
+    db.add(AuditLog(actor=user.username, action="cluster_settings_updated", payload=json.dumps({"node_id": r.node_id, "mode": r.cluster_mode})))
+    db.commit()
+    return {"status": "saved"}
+
+
+@app.post("/api/cluster/test-peer")
+def cluster_test_peer(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    cfg = get_effective_cluster_settings(db)
+    peer = cfg.get("peer_node_ip")
+    result = {"peer": peer, "tcp_8080": False, "api_reachable": False}
+    try:
+        with socket.create_connection((peer, 8080), timeout=2):
+            result["tcp_8080"] = True
+    except Exception:
+        pass
+    try:
+        r = requests.get(f"http://{peer}:8080/docs", timeout=2)
+        result["api_reachable"] = r.ok
+    except Exception:
+        pass
+    return result
+
+
+@app.post("/api/smtp-event")
+def smtp_event(event: dict, db: Session = Depends(get_db)):
+    if event.get("type") == "reject":
+        db.add(RejectionLog(sender=event.get("sender"), recipient=event.get("recipient"), client_ip=event.get("client_ip"), reason=event.get("reason") or get_effective_cluster_settings(db).get("reject_response_message", "rejected")))
+    else:
+        db.add(
+            MailLog(
+                sender=event.get("sender"),
+                recipient=event.get("recipient"),
+                client_ip=event.get("client_ip"),
+                status=event.get("status", "processed"),
+                target=event.get("target"),
+                tls_used=bool(event.get("tls_used", False)),
+                smtp_code=event.get("smtp_code"),
+                smtp_text=event.get("smtp_text"),
+            )
+        )
+    db.commit()
+    return {"status": "ok"}
