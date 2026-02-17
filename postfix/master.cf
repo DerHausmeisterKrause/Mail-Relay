@@ -1,0 +1,5 @@
+smtp      inet  n       -       y       -       -       smtpd
+pickup    unix  n       -       y       60      1       pickup
+cleanup   unix  n       -       y       -       0       cleanup
+qmgr      unix  n       -       y       300     1       qmgr
+smtp      unix  -       -       y       -       -       smtp
