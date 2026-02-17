@@ -261,10 +261,16 @@ def snapshot_config(db: Session, actor: str):
 def render_postfix(db: Session):
     domains = [d.domain for d in db.query(DomainPolicy).filter(DomainPolicy.enabled.is_(True)).all()]
     routes = db.query(RelayRoute).all()
-    (GENERATED / "allowed_sender_domains").write_text("\n".join(domains) + "\n")
-    (GENERATED / "sender_relay").write_text("\n".join([f"@{r.sender_domain} [{r.target_host}]:{r.target_port}" for r in routes]) + "\n")
-    (GENERATED / "transport").write_text("\n".join([f"{r.sender_domain} smtp:[{r.target_host}]:{r.target_port}" for r in routes]) + "\n")
-    (GENERATED / "sasl_passwd").write_text("\n".join([f"[{r.target_host}]:{r.target_port} {r.auth_username}:{r.auth_password}" for r in routes if r.auth_username]) + "\n")
+
+    allowed_sender_lines = [f"{domain} OK" for domain in domains if domain]
+    sender_relay_lines = [f"@{r.sender_domain} [{r.target_host}]:{r.target_port}" for r in routes]
+    transport_lines = [f"{r.sender_domain} smtp:[{r.target_host}]:{r.target_port}" for r in routes]
+    sasl_passwd_lines = [f"[{r.target_host}]:{r.target_port} {r.auth_username}:{r.auth_password}" for r in routes if r.auth_username]
+
+    (GENERATED / "allowed_sender_domains").write_text("\n".join(allowed_sender_lines) + ("\n" if allowed_sender_lines else ""))
+    (GENERATED / "sender_relay").write_text("\n".join(sender_relay_lines) + ("\n" if sender_relay_lines else ""))
+    (GENERATED / "transport").write_text("\n".join(transport_lines) + ("\n" if transport_lines else ""))
+    (GENERATED / "sasl_passwd").write_text("\n".join(sasl_passwd_lines) + ("\n" if sasl_passwd_lines else ""))
     msg = get_effective_cluster_settings(db).get("reject_response_message") or "Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen."
     (GENERATED / "reject_response_message").write_text(msg.strip() + "\n")
 
