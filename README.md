@@ -10,8 +10,6 @@ docker compose up -d --build
 
 Danach alles über die Web-GUI konfigurieren: `https://<node-ip>:8443`.
 
-Hinweis für rootless/restriktive Hosts: SMTP läuft standardmäßig auf Host-Port `2525` (Container-Port `25`).
-
 ## GUI-first Konfiguration
 
 In der GUI konfigurierbar:
@@ -45,17 +43,14 @@ In der GUI konfigurierbar:
 - Für Web-PR Merge ist `.gitattributes` mit `merge=ours` für Konfliktdateien gesetzt.
 
 
-## Port-Mapping (Host)
-
-- `BACKEND_BIND_PORT` (Default `8080`) -> Backend Container `8080`
-- `FRONTEND_BIND_PORT` (Default `8443`) -> Frontend Container `8443`
-- `SMTP_BIND_PORT` (Default `2525`) -> Postfix Container `25`
-
-Wenn dein Host privilegierte Ports erlaubt, kannst du `SMTP_BIND_PORT=25` setzen.
 
 
-## Hinweis zum Startfehler `ip_unprivileged_port_start`
+## Runtime-Netzwerkmodus (wichtig)
 
-Wenn Docker auf deinem Host `open sysctl net.ipv4.ip_unprivileged_port_start ... permission denied` wirft, ist oft ein Container mit `network_mode: host` die Ursache.
+Zur Vermeidung des Host-Fehlers `ip_unprivileged_port_start ... permission denied` laufen die Services standardmäßig mit `network_mode: host`.
+Dadurch entfallen Docker Port-Publishings und der Stack startet auch auf restriktiven Hosts zuverlässiger.
 
-In diesem Projekt läuft `queue-sync` jetzt ohne Host-Network und prüft VIP-Ownership über den laufenden `keepalived`-Container (via Docker Socket).
+Erreichbarkeit nach Start:
+- GUI: `https://<HOST-IP>:8443`
+- SMTP: `<HOST-IP>:25`
+- Backend API: `http://<HOST-IP>:8080`
