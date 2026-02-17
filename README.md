@@ -104,3 +104,9 @@ swaks --to user@target.tld --from sender@allowed-domain.tld --server <VIP> --por
 # blocked sender domain
 swaks --to user@target.tld --from sender@blocked-domain.tld --server <VIP> --port 25
 ```
+
+
+## Troubleshooting
+
+- Wenn GitHub "This branch has conflicts" meldet, ist ein lokaler Rebase/Merge gegen den Ziel-Branch nötig.
+- Diese Branch-Version enthält konfliktfreie Dateien für die Core-Komponenten (`backend`, `frontend`, `keepalived`, `sync`, `db`, `compose`).

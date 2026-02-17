@@ -9,13 +9,16 @@ function loginView(){
     <input id="u" value="admin" placeholder="Username"><input id="p" type="password" value="Admin123" placeholder="Password">
     <button id="l">Anmelden</button><pre id="m"></pre></div>`;
   document.getElementById('l').onclick = async ()=>{
-    const r = await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username:u.value,password:p.value})});
-    const d = await r.json(); if(!r.ok){m.textContent=d.detail||'Login fehlgeschlagen'; return;}
+    const username = document.getElementById('u').value;
+    const password = document.getElementById('p').value;
+    const message = document.getElementById('m');
+    const r = await fetch('/api/login',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({username,password})});
+    const d = await r.json(); if(!r.ok){message.textContent=d.detail||'Login fehlgeschlagen'; return;}
     token=d.token; localStorage.setItem('token',token); mainView();
   }
 }
 
-async function api(path,opt={}){ opt.headers=Object.assign({},opt.headers||{}, {'Authorization':'Bearer '+token,'content-type':'application/json'}); const r=await fetch(path,opt); return [r, await r.json()]; }
+async function api(path,opt={}){ opt.headers=Object.assign({},opt.headers||{}, {'Authorization':'Bearer '+token,'content-type':'application/json'}); const r=await fetch(path,opt); let data={}; try{data=await r.json()}catch(_){data={}}; return [r, data]; }
 
 function clusterForm(c){
   return `<div class="card"><h3>Cluster / Node / TLS / SSH</h3>
