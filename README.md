@@ -52,3 +52,10 @@ In der GUI konfigurierbar:
 - `SMTP_BIND_PORT` (Default `2525`) -> Postfix Container `25`
 
 Wenn dein Host privilegierte Ports erlaubt, kannst du `SMTP_BIND_PORT=25` setzen.
+
+
+## Hinweis zum Startfehler `ip_unprivileged_port_start`
+
+Wenn Docker auf deinem Host `open sysctl net.ipv4.ip_unprivileged_port_start ... permission denied` wirft, ist oft ein Container mit `network_mode: host` die Ursache.
+
+In diesem Projekt läuft `queue-sync` jetzt ohne Host-Network und prüft VIP-Ownership über den laufenden `keepalived`-Container (via Docker Socket).
