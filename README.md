@@ -122,3 +122,10 @@ Wenn GitHub bei diesem Branch weiterhin meldet **"This branch has conflicts"**, 
 
 Der Script löst die bekannten Konfliktdateien mit der aktuellen Branch-Version (\`--ours\`) auf, staged sie und zeigt danach die nächsten Schritte an.
 
+
+
+## Web-PR Merge ohne CLI (Konflikte vermeiden)
+
+Damit PRs auch ohne lokale CLI-Nutzung über GitHub Web-GUI besser mergen, nutzt dieses Repo eine `.gitattributes`-Strategie für die wiederkehrenden Konfliktdateien (`merge=ours`).
+
+Das bedeutet: Bei Merge-Konflikten in diesen Dateien wird bevorzugt die PR-Branch-Version übernommen, damit die Web-Merge-Blockade reduziert wird.
