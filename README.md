@@ -10,6 +10,8 @@ docker compose up -d --build
 
 Danach alles über die Web-GUI konfigurieren: `https://<node-ip>:8443`.
 
+Hinweis für rootless/restriktive Hosts: SMTP läuft standardmäßig auf Host-Port `2525` (Container-Port `25`).
+
 ## GUI-first Konfiguration
 
 In der GUI konfigurierbar:
@@ -41,3 +43,12 @@ In der GUI konfigurierbar:
 ./scripts/resolve_merge_conflicts.sh
 ```
 - Für Web-PR Merge ist `.gitattributes` mit `merge=ours` für Konfliktdateien gesetzt.
+
+
+## Port-Mapping (Host)
+
+- `BACKEND_BIND_PORT` (Default `8080`) -> Backend Container `8080`
+- `FRONTEND_BIND_PORT` (Default `8443`) -> Frontend Container `8443`
+- `SMTP_BIND_PORT` (Default `2525`) -> Postfix Container `25`
+
+Wenn dein Host privilegierte Ports erlaubt, kannst du `SMTP_BIND_PORT=25` setzen.
