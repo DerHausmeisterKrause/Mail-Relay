@@ -34,7 +34,7 @@ services:
     network_mode: host
     depends_on: [backend]
     volumes:
-      - certs_data:/certs:ro
+      - certs_data:/certs
 
   postfix:
     build: ./postfix
@@ -44,7 +44,7 @@ services:
     volumes:
       - postfix_queue:/var/spool/postfix
       - ./postfix/generated:/etc/postfix/generated
-      - certs_data:/certs:ro
+      - certs_data:/certs
 
   keepalived:
     build: ./keepalived

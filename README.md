@@ -27,6 +27,8 @@ In der GUI konfigurierbar:
 - PostgreSQL für Config/Logs/Audit
 - FastAPI Backend + HTTPS Frontend
 
+- Frontend benötigt Schreibzugriff auf `certs_data` beim ersten Start, um Bootstrap-Zertifikate zu erzeugen.
+
 ## Queue Sync Sicherheit
 
 - VIP ownership check
