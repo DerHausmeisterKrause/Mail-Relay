@@ -1,0 +1,13 @@
+.env.example merge=ours
+README.md merge=ours
+backend/app/main.py merge=ours
+backend/app/models.py merge=ours
+backend/app/schemas.py merge=ours
+db/init.sql merge=ours
+docker-compose.yml merge=ours
+frontend/Dockerfile merge=ours
+frontend/src/app.js merge=ours
+frontend/src/index.html merge=ours
+keepalived/Dockerfile merge=ours
+keepalived/entrypoint.sh merge=ours
+sync/queue-sync.sh merge=ours
