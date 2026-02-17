@@ -110,3 +110,15 @@ swaks --to user@target.tld --from sender@blocked-domain.tld --server <VIP> --por
 
 - Wenn GitHub "This branch has conflicts" meldet, ist ein lokaler Rebase/Merge gegen den Ziel-Branch nötig.
 - Diese Branch-Version enthält konfliktfreie Dateien für die Core-Komponenten (`backend`, `frontend`, `keepalived`, `sync`, `db`, `compose`).
+
+
+## Merge-Konflikte schnell auflösen (ein Kommando)
+
+Wenn GitHub bei diesem Branch weiterhin meldet **"This branch has conflicts"**, kannst du die wiederkehrenden Konflikte automatisiert auflösen:
+
+```bash
+./scripts/resolve_merge_conflicts.sh
+```
+
+Der Script löst die bekannten Konfliktdateien mit der aktuellen Branch-Version (\`--ours\`) auf, staged sie und zeigt danach die nächsten Schritte an.
+
