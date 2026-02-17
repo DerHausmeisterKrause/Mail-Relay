@@ -1,0 +1,72 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    restart: unless-stopped
+    network_mode: host
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-mailrelay}
+      POSTGRES_USER: ${POSTGRES_USER:-mailrelay}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-mailrelay}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+      - ./db/init.sql:/docker-entrypoint-initdb.d/01-init.sql:ro
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -h 127.0.0.1 -U ${POSTGRES_USER:-mailrelay} -d ${POSTGRES_DB:-mailrelay}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+
+  backend:
+    build: ./backend
+    restart: unless-stopped
+    network_mode: host
+    depends_on:
+      postgres:
+        condition: service_healthy
+    volumes:
+      - ./postfix/generated:/generated
+      - certs_data:/certs
+      - runtime_data:/runtime
+
+  frontend:
+    build: ./frontend
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [backend]
+    volumes:
+      - certs_data:/certs:ro
+
+  postfix:
+    build: ./postfix
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [backend]
+    volumes:
+      - postfix_queue:/var/spool/postfix
+      - ./postfix/generated:/etc/postfix/generated
+      - certs_data:/certs:ro
+
+  keepalived:
+    build: ./keepalived
+    restart: unless-stopped
+    network_mode: host
+    cap_add: [NET_ADMIN, NET_BROADCAST, NET_RAW]
+    volumes:
+      - ./keepalived/scripts:/scripts:ro
+      - runtime_data:/runtime
+
+  queue-sync:
+    build: ./sync
+    restart: unless-stopped
+    network_mode: host
+    depends_on: [postfix, backend]
+    volumes:
+      - postfix_queue:/var/spool/postfix
+      - /var/run/docker.sock:/var/run/docker.sock
+      - runtime_data:/runtime
+
+volumes:
+  postgres_data:
+  postfix_queue:
+  certs_data:
+  runtime_data:

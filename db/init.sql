@@ -1,0 +1,66 @@
+CREATE TABLE IF NOT EXISTS users (
+  id SERIAL PRIMARY KEY,
+  username VARCHAR(64) UNIQUE NOT NULL,
+  password_hash VARCHAR(255) NOT NULL,
+  role VARCHAR(16) NOT NULL DEFAULT 'Admin',
+  must_change_password BOOLEAN NOT NULL DEFAULT TRUE,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS config_versions (
+  id SERIAL PRIMARY KEY,
+  version INTEGER UNIQUE NOT NULL,
+  data TEXT NOT NULL,
+  created_by VARCHAR(64) NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW(),
+  applied BOOLEAN NOT NULL DEFAULT FALSE
+);
+CREATE TABLE IF NOT EXISTS domain_policies (
+  id SERIAL PRIMARY KEY,
+  domain VARCHAR(255) UNIQUE NOT NULL,
+  enabled BOOLEAN NOT NULL DEFAULT TRUE
+);
+CREATE TABLE IF NOT EXISTS relay_routes (
+  id SERIAL PRIMARY KEY,
+  sender_domain VARCHAR(255) UNIQUE NOT NULL,
+  target_host VARCHAR(255) NOT NULL,
+  target_port INTEGER NOT NULL DEFAULT 25,
+  tls_mode VARCHAR(32) NOT NULL DEFAULT 'opportunistic',
+  tls_verify BOOLEAN NOT NULL DEFAULT FALSE,
+  auth_username VARCHAR(255),
+  auth_password VARCHAR(255)
+);
+CREATE TABLE IF NOT EXISTS mail_logs (
+  id SERIAL PRIMARY KEY,
+  sender VARCHAR(255), recipient VARCHAR(255), client_ip VARCHAR(64), helo VARCHAR(255), rdns VARCHAR(255),
+  target VARCHAR(255), status VARCHAR(32) NOT NULL DEFAULT 'unknown', smtp_code VARCHAR(32), smtp_text TEXT,
+  tls_used BOOLEAN NOT NULL DEFAULT FALSE, subject VARCHAR(998), created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS rejection_logs (
+  id SERIAL PRIMARY KEY,
+  sender VARCHAR(255), recipient VARCHAR(255), client_ip VARCHAR(64), reason TEXT NOT NULL,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS audit_logs (
+  id SERIAL PRIMARY KEY,
+  actor VARCHAR(64) NOT NULL, action VARCHAR(255) NOT NULL, payload TEXT,
+  created_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cluster_settings (
+  id SERIAL PRIMARY KEY,
+  node_id VARCHAR(64) NOT NULL,
+  node_ip VARCHAR(64) NOT NULL,
+  peer_node_ip VARCHAR(64) NOT NULL,
+  vip_address VARCHAR(64) NOT NULL,
+  vrrp_priority INTEGER NOT NULL DEFAULT 100,
+  cluster_mode VARCHAR(32) NOT NULL DEFAULT 'standalone',
+  master_api_url VARCHAR(255), master_api_token VARCHAR(255),
+  tls_crt TEXT, tls_key TEXT, ssh_private_key TEXT, ssh_known_hosts TEXT,
+  peer_ssh_user VARCHAR(64) NOT NULL DEFAULT 'root',
+  updated_at TIMESTAMP NOT NULL DEFAULT NOW()
+);
+CREATE TABLE IF NOT EXISTS cluster_locks (
+  id SERIAL PRIMARY KEY,
+  lock_name VARCHAR(64) UNIQUE NOT NULL,
+  node_id VARCHAR(64) NOT NULL,
+  heartbeat TIMESTAMP NOT NULL DEFAULT NOW()
+);
