@@ -14,7 +14,7 @@ from fastapi import Depends, FastAPI, Header, HTTPException, Query
 from fastapi.middleware.cors import CORSMiddleware
 from fastapi.responses import StreamingResponse
 from fastapi.security import HTTPAuthorizationCredentials, HTTPBearer
-from sqlalchemy import desc, func
+from sqlalchemy import desc, func, text
 from sqlalchemy.orm import Session
 
 from .auth import create_token, decode_token, hash_password, verify_password
@@ -32,6 +32,20 @@ RUNTIME.mkdir(parents=True, exist_ok=True)
 CERT_DIR = Path("/certs")
 CERT_DIR.mkdir(parents=True, exist_ok=True)
 
+
+
+
+def migrate_schema_if_needed(db: Session):
+    # Handles upgrades on existing postgres volumes where init.sql is not re-run.
+    statements = [
+        "ALTER TABLE cluster_settings ADD COLUMN IF NOT EXISTS reject_response_message TEXT NOT NULL DEFAULT 'Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen.'"
+    ]
+    for stmt in statements:
+        try:
+            db.execute(text(stmt))
+            db.commit()
+        except Exception:
+            db.rollback()
 
 def ensure_cluster_settings(db: Session):
     row = db.query(ClusterSetting).order_by(desc(ClusterSetting.id)).first()
@@ -151,6 +165,7 @@ def init_admin(db: Session):
 @app.on_event("startup")
 def startup():
     db = next(get_db())
+    migrate_schema_if_needed(db)
     init_admin(db)
     seed_demo_mails(db)
     write_runtime_artifacts(ensure_cluster_settings(db))
