@@ -35,3 +35,15 @@ class ClusterSettingsRequest(BaseModel):
     ssh_known_hosts: str | None = None
     peer_ssh_user: str = "root"
     reject_response_message: str | None = None
+
+
+class UserCreateRequest(BaseModel):
+    username: str
+    password: str
+    role: str = "Operator"
+
+
+class UserUpdateRequest(BaseModel):
+    role: str | None = None
+    password: str | None = None
+    must_change_password: bool | None = None

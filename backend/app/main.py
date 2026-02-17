@@ -20,7 +20,7 @@ from sqlalchemy.orm import Session
 from .auth import create_token, decode_token, hash_password, verify_password
 from .db import get_db
 from .models import AuditLog, ClusterLock, ClusterSetting, ConfigVersion, DomainPolicy, MailLog, RelayRoute, RejectionLog, User
-from .schemas import ClusterSettingsRequest, DomainRequest, LoginRequest, RouteRequest
+from .schemas import ClusterSettingsRequest, DomainRequest, LoginRequest, RouteRequest, UserCreateRequest, UserUpdateRequest
 
 app = FastAPI(title="Mail Relay HA API")
 security = HTTPBearer()
@@ -281,6 +281,70 @@ def login(req: LoginRequest, db: Session = Depends(get_db)):
     if not u or not verify_password(req.password, u.password_hash):
         raise HTTPException(status_code=401, detail="invalid credentials")
     return {"token": create_token(u.username, u.role), "role": u.role, "must_change_password": u.must_change_password}
+
+
+
+
+@app.get("/api/users")
+def list_users(user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin"])
+    rows = db.query(User).order_by(User.username.asc()).all()
+    return [
+        {
+            "id": u.id,
+            "username": u.username,
+            "role": u.role,
+            "must_change_password": u.must_change_password,
+            "created_at": u.created_at.isoformat() if u.created_at else None,
+        }
+        for u in rows
+    ]
+
+
+@app.post("/api/users")
+def create_user(req: UserCreateRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin"])
+    if req.role not in ["Admin", "Operator", "ReadOnly"]:
+        raise HTTPException(status_code=400, detail="invalid role")
+    username = req.username.strip()
+    if not username or len(req.password) < 8:
+        raise HTTPException(status_code=400, detail="username/password invalid")
+    if db.query(User).filter(User.username == username).first():
+        raise HTTPException(status_code=409, detail="user already exists")
+    db.add(User(username=username, password_hash=hash_password(req.password), role=req.role, must_change_password=True))
+    db.add(AuditLog(actor=user.username, action="user_created", payload=f"username={username};role={req.role}"))
+    db.commit()
+    return {"status": "created", "username": username}
+
+
+@app.patch("/api/users/{user_id}")
+def update_user(user_id: int, req: UserUpdateRequest, user: User = Depends(current_user), db: Session = Depends(get_db)):
+    require_role(user, ["Admin"])
+    target = db.query(User).filter(User.id == user_id).first()
+    if not target:
+        raise HTTPException(status_code=404, detail="user not found")
+    if target.id == user.id and req.role and req.role != "Admin":
+        raise HTTPException(status_code=400, detail="cannot downgrade own admin role")
+
+    updates = []
+    if req.role is not None:
+        if req.role not in ["Admin", "Operator", "ReadOnly"]:
+            raise HTTPException(status_code=400, detail="invalid role")
+        target.role = req.role
+        updates.append(f"role={req.role}")
+    if req.password is not None:
+        if len(req.password) < 8:
+            raise HTTPException(status_code=400, detail="password too short")
+        target.password_hash = hash_password(req.password)
+        target.must_change_password = True if req.must_change_password is None else req.must_change_password
+        updates.append("password_reset=true")
+    if req.must_change_password is not None:
+        target.must_change_password = req.must_change_password
+        updates.append(f"must_change_password={req.must_change_password}")
+
+    db.add(AuditLog(actor=user.username, action="user_updated", payload=f"username={target.username};" + ",".join(updates)))
+    db.commit()
+    return {"status": "updated", "id": target.id}
 
 
 @app.get("/api/config")

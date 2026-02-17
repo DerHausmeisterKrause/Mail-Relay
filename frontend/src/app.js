@@ -1,6 +1,6 @@
 const app = document.getElementById('app');
 let token = localStorage.getItem('token') || '';
-let state = { tab: 'dashboard', mailRows: [], settingsOpen: false };
+let state = { tab: 'dashboard', mailRows: [], settingsOpen: false, users: [] };
 
 const esc = (s='') => String(s).replaceAll('&','&amp;').replaceAll('<','&lt;').replaceAll('>','&gt;');
 async function api(path,opt={}){ opt.headers=Object.assign({},opt.headers||{}, {'Authorization':'Bearer '+token,'content-type':'application/json'}); const r=await fetch(path,opt); let d={}; try{d=await r.json()}catch(_){d={}} return [r,d]; }
@@ -20,6 +20,7 @@ function shell(content){
       <button data-tab="dashboard">Dashboard</button>
       <button data-tab="mail">Mail Tracking & Suche</button>
       <button data-tab="config">Routing & Domains</button>
+      <button data-tab="users">Benutzerverwaltung</button>
       <button id="openSettings">⚙ Einstellungen</button>
       <button id="logout" style="background:#475569">Logout</button>
     </div>
@@ -100,6 +101,14 @@ function renderDashboard(d){
   <div class="card"><h3>Letzte Rejections</h3><ul>${(d.rejected_last_100||[]).slice(0,20).map(r=>`<li>${esc(r.created_at)} - ${esc(r.sender||'')} -> ${esc(r.recipient||'')} (${esc(r.reason||'')})</li>`).join('')}</ul></div>`;
 }
 
+function renderUsersTab(){
+  return `<div class="card"><h2>Benutzerverwaltung</h2>
+  <div class=row><input id=new_user placeholder="Username"><input id=new_pass type=password placeholder="Passwort (mind. 8 Zeichen)"></div>
+  <div class=row><select id=new_role><option>Admin</option><option selected>Operator</option><option>ReadOnly</option></select><button id=createUser>Benutzer anlegen</button></div>
+  <div style="max-height:420px;overflow:auto"><table style="width:100%;font-size:12px"><thead><tr><th>User</th><th>Rolle</th><th>Force PW Change</th><th>Aktion</th></tr></thead><tbody>${state.users.map(u=>`<tr><td>${esc(u.username)}</td><td><select data-role-id="${u.id}"><option ${u.role==='Admin'?'selected':''}>Admin</option><option ${u.role==='Operator'?'selected':''}>Operator</option><option ${u.role==='ReadOnly'?'selected':''}>ReadOnly</option></select></td><td><input type="checkbox" data-mcp-id="${u.id}" ${u.must_change_password?'checked':''}></td><td><input type="password" data-rst-id="${u.id}" placeholder="neues Passwort"><button data-save-id="${u.id}">Speichern</button></td></tr>`).join('')}</tbody></table></div>
+  <pre id=userOut></pre></div>`;
+}
+
 function renderConfigTab(conf){
   return `<div class="grid"><div class="card"><h2>Allowed Domains</h2><input id=domain placeholder='example.com'><button id=addDomain>Domain hinzufügen</button><ul>${(conf.domains||[]).map(d=>`<li>${esc(d.domain)}</li>`).join('')}</ul></div>
   <div class="card"><h2>Sender Routing</h2><input id=sd placeholder='sender-domain'><input id=th placeholder='target host'><input id=tp value='25'><button id=addRoute>Route hinzufügen</button><ul>${(conf.routes||[]).map(r=>`<li>@${esc(r.sender_domain)} → ${esc(r.target_host)}:${r.target_port}</li>`).join('')}</ul>
@@ -111,8 +120,9 @@ async function renderApp(){
   if(rd.status===401){loginView(); return;}
   const [,conf]=await api('/api/config');
   const [,cluster]=await api('/api/cluster/settings');
+  if(state.tab==='users'){ const [ru,ud]=await api('/api/users'); state.users = ru.ok && Array.isArray(ud) ? ud : []; }
 
-  let content = state.tab==='dashboard' ? renderDashboard(dash) : state.tab==='mail' ? renderMailTab() : renderConfigTab(conf);
+  let content = state.tab==='dashboard' ? renderDashboard(dash) : state.tab==='mail' ? renderMailTab() : state.tab==='users' ? renderUsersTab() : renderConfigTab(conf);
   content += settingsModal(cluster);
   app.innerHTML = shell(content);
 
@@ -133,6 +143,27 @@ async function renderApp(){
     document.getElementById('addRoute').onclick=async()=>{await api('/api/routes',{method:'POST',body:JSON.stringify({sender_domain:sd.value,target_host:th.value,target_port:parseInt(tp.value,10),tls_mode:'opportunistic',tls_verify:false})}); renderApp();};
     document.getElementById('testCfg').onclick=async()=>{const [,d]=await api('/api/config/test',{method:'POST',body:'{}'}); configOut.textContent=JSON.stringify(d,null,2)};
     document.getElementById('applyCfg').onclick=async()=>{const [,d]=await api('/api/config/apply',{method:'POST',body:'{}'}); configOut.textContent=JSON.stringify(d,null,2)};
+  }
+
+
+  if(state.tab==='users'){
+    document.getElementById('createUser').onclick=async()=>{
+      const body={username:new_user.value,password:new_pass.value,role:new_role.value};
+      const [r,d]=await api('/api/users',{method:'POST',body:JSON.stringify(body)});
+      userOut.textContent = JSON.stringify(d,null,2);
+      if(r.ok) renderApp();
+    };
+    document.querySelectorAll('[data-save-id]').forEach(btn=>btn.onclick=async()=>{
+      const id=btn.getAttribute('data-save-id');
+      const roleEl=document.querySelector(`[data-role-id="${id}"]`);
+      const mcpEl=document.querySelector(`[data-mcp-id="${id}"]`);
+      const rstEl=document.querySelector(`[data-rst-id="${id}"]`);
+      const body={role:roleEl.value,must_change_password:mcpEl.checked};
+      if(rstEl.value) body.password=rstEl.value;
+      const [r,d]=await api('/api/users/'+id,{method:'PATCH',body:JSON.stringify(body)});
+      userOut.textContent = JSON.stringify(d,null,2);
+      if(r.ok) renderApp();
+    });
   }
 
   if(state.settingsOpen){

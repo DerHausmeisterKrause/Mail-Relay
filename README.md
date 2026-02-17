@@ -60,3 +60,12 @@ Erreichbarkeit nach Start:
 - GUI: `https://<HOST-IP>:8443`
 - SMTP: `<HOST-IP>:25`
 - Backend API: `http://<HOST-IP>:8080`
+
+
+## Benutzerverwaltung
+- In der Web-GUI gibt es jetzt den Bereich **Benutzerverwaltung** (nur Admin): Benutzer anlegen, Rollen (Admin/Operator/ReadOnly) ändern und Passwörter zurücksetzen.
+- Beim Passwort-Reset wird `must_change_password` gesetzt, damit der Nutzer beim nächsten Login ein neues Passwort setzen muss.
+
+## Postfix Start-Stabilität
+- Der Postfix-Entrypoint normalisiert `allowed_sender_domains` automatisch in gültige `check_sender_access`-Map-Einträge (`<domain> OK`).
+- Falls noch keine TLS-Dateien vorhanden sind, werden Start-Zertifikate im Postfix-Container erzeugt, damit der Dienst nicht in einen Restart-Loop läuft.
