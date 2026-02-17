@@ -13,6 +13,9 @@ Danach alles über die Web-GUI konfigurieren: `https://<node-ip>:8443`.
 ## GUI-first Konfiguration
 
 In der GUI konfigurierbar:
+- Mail Tracking & Suche (Filter nach Sender, Empfänger, IP, Status, Ziel) + CSV Export
+- Dashboard mit letzten Rejects
+- Einstellungen zentral über einen ⚙ Button (Cluster, Node, VIP, Peer Test)
 - Node/Cluster: NODE_ID, NODE_IP, PEER_NODE_IP, VIP, VRRP Priority
 - Mode: standalone/master/slave
 - Master API URL/Token (für slave)
