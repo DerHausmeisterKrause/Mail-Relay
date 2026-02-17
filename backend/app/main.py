@@ -47,6 +47,7 @@ def ensure_cluster_settings(db: Session):
         master_api_url=os.getenv("MASTER_API_URL", ""),
         master_api_token=os.getenv("MASTER_API_TOKEN", ""),
         peer_ssh_user=os.getenv("PEER_SSH_USER", "root"),
+        reject_response_message=os.getenv("REJECT_RESPONSE_MESSAGE", "Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen."),
     )
     db.add(row)
     db.commit()
@@ -67,6 +68,7 @@ def write_runtime_artifacts(settings: ClusterSetting):
                 "master_api_url": settings.master_api_url,
                 "master_api_token": settings.master_api_token,
                 "peer_ssh_user": settings.peer_ssh_user,
+                "reject_response_message": settings.reject_response_message,
                 "vrrp_interface": os.getenv("VRRP_INTERFACE", "eth0"),
                 "vrrp_router_id": int(os.getenv("VRRP_ROUTER_ID", "51")),
                 "vrrp_auth_pass": os.getenv("VRRP_AUTH_PASS", "changevrrppass"),
@@ -97,10 +99,41 @@ def get_effective_cluster_settings(db: Session):
         "master_api_url": s.master_api_url,
         "master_api_token": s.master_api_token,
         "peer_ssh_user": s.peer_ssh_user,
+        "reject_response_message": s.reject_response_message,
         "has_tls": bool(s.tls_crt and s.tls_key),
         "has_ssh_key": bool(s.ssh_private_key),
     }
 
+
+
+
+def seed_demo_mails(db: Session):
+    if db.query(MailLog).count() > 0 or db.query(RejectionLog).count() > 0:
+        return
+    now = datetime.utcnow()
+    demo = [
+        ("ok", "alice@allowed.tld", "user1@target.tld", "10.10.0.11", "relayA", True),
+        ("ok", "bob@allowed.tld", "user2@target.tld", "10.10.0.12", "relayA", False),
+        ("deferred", "carol@allowed.tld", "user3@target.tld", "10.10.0.13", "relayB", True),
+        ("ok", "dave@allowed.tld", "user4@target.tld", "10.10.0.14", "relayA", True),
+        ("bounced", "eve@allowed.tld", "user5@target.tld", "10.10.0.15", "relayB", False),
+        ("ok", "frank@allowed.tld", "user6@target.tld", "10.10.0.16", "relayA", True),
+        ("deferred", "gina@allowed.tld", "user7@target.tld", "10.10.0.17", "relayB", False),
+        ("ok", "henry@allowed.tld", "user8@target.tld", "10.10.0.18", "relayA", True),
+        ("ok", "ivy@allowed.tld", "user9@target.tld", "10.10.0.19", "relayA", False),
+        ("bounced", "jack@allowed.tld", "user10@target.tld", "10.10.0.20", "relayB", True),
+    ]
+    for i, row in enumerate(demo):
+        st, snd, rcpt, ip, tgt, tls = row
+        db.add(MailLog(sender=snd, recipient=rcpt, client_ip=ip, status=st, target=tgt, tls_used=tls, smtp_code="250" if st=="ok" else "451" if st=="deferred" else "550", smtp_text="queued for delivery" if st=="ok" else "temporary lookup failure" if st=="deferred" else "relay target rejected message", created_at=now - timedelta(minutes=i*7)))
+    rejects = [
+        ("spam@bad.tld", "user@target.tld", "10.20.0.2", "Sender domain blocked by policy"),
+        ("unknown@bad.tld", "ops@target.tld", "10.20.0.3", "Invalid envelope sender domain"),
+        ("noreply@bad.tld", "sales@target.tld", "10.20.0.4", "Domain not in whitelist"),
+    ]
+    for i, r in enumerate(rejects):
+        db.add(RejectionLog(sender=r[0], recipient=r[1], client_ip=r[2], reason=r[3], created_at=now - timedelta(minutes=5+i*11)))
+    db.commit()
 
 def init_admin(db: Session):
     if db.query(User).count() == 0:
@@ -119,6 +152,7 @@ def init_admin(db: Session):
 def startup():
     db = next(get_db())
     init_admin(db)
+    seed_demo_mails(db)
     write_runtime_artifacts(ensure_cluster_settings(db))
     threading.Thread(target=sync_from_master_loop, daemon=True).start()
     threading.Thread(target=retention_loop, daemon=True).start()
@@ -216,6 +250,8 @@ def render_postfix(db: Session):
     (GENERATED / "sender_relay").write_text("\n".join([f"@{r.sender_domain} [{r.target_host}]:{r.target_port}" for r in routes]) + "\n")
     (GENERATED / "transport").write_text("\n".join([f"{r.sender_domain} smtp:[{r.target_host}]:{r.target_port}" for r in routes]) + "\n")
     (GENERATED / "sasl_passwd").write_text("\n".join([f"[{r.target_host}]:{r.target_port} {r.auth_username}:{r.auth_password}" for r in routes if r.auth_username]) + "\n")
+    msg = get_effective_cluster_settings(db).get("reject_response_message") or "Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen."
+    (GENERATED / "reject_response_message").write_text(msg.strip() + "\n")
 
 
 @app.post("/api/login")
@@ -389,6 +425,8 @@ def set_cluster_settings(req: ClusterSettingsRequest, user: User = Depends(curre
             setattr(r, k, v)
     r.updated_at = datetime.utcnow()
     write_runtime_artifacts(r)
+    render_postfix(db)
+    (GENERATED / ".reload").touch()
     db.add(AuditLog(actor=user.username, action="cluster_settings_updated", payload=json.dumps({"node_id": r.node_id, "mode": r.cluster_mode})))
     db.commit()
     return {"status": "saved"}
@@ -415,7 +453,7 @@ def cluster_test_peer(user: User = Depends(current_user), db: Session = Depends(
 @app.post("/api/smtp-event")
 def smtp_event(event: dict, db: Session = Depends(get_db)):
     if event.get("type") == "reject":
-        db.add(RejectionLog(sender=event.get("sender"), recipient=event.get("recipient"), client_ip=event.get("client_ip"), reason=event.get("reason", "rejected")))
+        db.add(RejectionLog(sender=event.get("sender"), recipient=event.get("recipient"), client_ip=event.get("client_ip"), reason=event.get("reason") or get_effective_cluster_settings(db).get("reject_response_message", "rejected")))
     else:
         db.add(
             MailLog(

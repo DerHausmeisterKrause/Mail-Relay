@@ -21,6 +21,7 @@ In der GUI konfigurierbar:
 - Master API URL/Token (für slave)
 - TLS Zertifikat/Key
 - SSH Key + known_hosts + Peer SSH User für Queue Sync
+- Failure Antwort für nicht verarbeitbare Mails (manuell einstellbar)
 
 ## Architektur
 

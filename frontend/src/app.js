@@ -31,19 +31,53 @@ function settingsModal(cluster){
   if(!state.settingsOpen) return '';
   const suggestVip = (cluster.node_ip||'10.0.0.11').split('.').slice(0,3).join('.') + '.50';
   return `<div class="card" style="border:2px solid #60a5fa"><h2>Cluster Einstellungen</h2>
-  <p style="opacity:.85">Assistent für Node-Verbindung und VIP</p>
-  <div class=row><input id=node_id value="${esc(cluster.node_id||'')}" placeholder="Node ID"><input id=node_ip value="${esc(cluster.node_ip||'')}" placeholder="Node IP"></div>
-  <div class=row><input id=peer_node_ip value="${esc(cluster.peer_node_ip||'')}" placeholder="Peer Node IP"><input id=vip_address value="${esc(cluster.vip_address||suggestVip)}" placeholder="VIP Address"></div>
-  <div class=row><input id=vrrp_priority type=number value="${cluster.vrrp_priority||100}" placeholder="VRRP Priority"><select id=cluster_mode><option ${cluster.cluster_mode==='standalone'?'selected':''}>standalone</option><option ${cluster.cluster_mode==='master'?'selected':''}>master</option><option ${cluster.cluster_mode==='slave'?'selected':''}>slave</option></select></div>
+  <p style="opacity:.85">Assistent für Node-Verbindung und VIP. Felder sind unten beschrieben.</p>
+
+  <label><b>Node ID</b><br><small>Eindeutiger Name dieses Nodes (z.B. node-a).</small></label>
+  <input id=node_id value="${esc(cluster.node_id||'')}" placeholder="node-a">
+
+  <label><b>Node IP</b><br><small>IP dieses Hosts im Cluster-Netz.</small></label>
+  <input id=node_ip value="${esc(cluster.node_ip||'')}" placeholder="10.0.0.11">
+
+  <label><b>Peer Node IP</b><br><small>IP des zweiten Cluster-Nodes.</small></label>
+  <input id=peer_node_ip value="${esc(cluster.peer_node_ip||'')}" placeholder="10.0.0.12">
+
+  <label><b>VIP (Virtuelle IP)</b><br><small>Diese IP springt zwischen den Nodes bei Failover.</small></label>
+  <input id=vip_address value="${esc(cluster.vip_address||suggestVip)}" placeholder="10.0.0.50">
+
+  <div class=row>
+    <div>
+      <label><b>VRRP Priority</b><br><small>Höher = bevorzugter Active-Node.</small></label>
+      <input id=vrrp_priority type=number value="${cluster.vrrp_priority||100}" placeholder="100">
+    </div>
+    <div>
+      <label><b>Cluster Modus</b><br><small>standalone/master/slave.</small></label>
+      <select id=cluster_mode><option ${cluster.cluster_mode==='standalone'?'selected':''}>standalone</option><option ${cluster.cluster_mode==='master'?'selected':''}>master</option><option ${cluster.cluster_mode==='slave'?'selected':''}>slave</option></select>
+    </div>
+  </div>
+
   <button id=suggestVip>VIP Vorschlag setzen (${suggestVip})</button>
   <button id=testPeer style="background:#0ea5e9">Peer Verbindung testen</button>
-  <input id=master_api_url value="${esc(cluster.master_api_url||'')}" placeholder="Master API URL (nur Slave)">
-  <input id=master_api_token value="${esc(cluster.master_api_token||'')}" placeholder="Master API Token (nur Slave)">
-  <input id=peer_ssh_user value="${esc(cluster.peer_ssh_user||'root')}" placeholder="Peer SSH User">
+
+  <label><b>Master API URL (nur Slave)</b><br><small>API-Endpunkt des Master-Nodes.</small></label>
+  <input id=master_api_url value="${esc(cluster.master_api_url||'')}" placeholder="http://10.0.0.11:8080/api">
+
+  <label><b>Master API Token (nur Slave)</b><br><small>Token für Konfig-Sync vom Master.</small></label>
+  <input id=master_api_token value="${esc(cluster.master_api_token||'')}" placeholder="token...">
+
+  <label><b>Peer SSH User</b><br><small>SSH-User für Queue-Sync rsync Push.</small></label>
+  <input id=peer_ssh_user value="${esc(cluster.peer_ssh_user||'root')}" placeholder="root">
+
+  <label><b>Failure Antwort für nicht verarbeitbare Mails</b><br><small>Diese Meldung wird bei Reject/Bounce-Fehlern verwendet.</small></label>
+  <textarea id=reject_response_message placeholder='Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen.'>${esc(cluster.reject_response_message||'')}</textarea>
+
   <details><summary>TLS / SSH Material (optional)</summary>
-  <textarea id=tls_crt placeholder='tls cert'></textarea><textarea id=tls_key placeholder='tls key'></textarea>
-  <textarea id=ssh_private_key placeholder='ssh private key'></textarea><textarea id=ssh_known_hosts placeholder='known hosts'></textarea>
+    <label>TLS Zertifikat (PEM)</label><textarea id=tls_crt placeholder='tls cert'></textarea>
+    <label>TLS Key (PEM)</label><textarea id=tls_key placeholder='tls key'></textarea>
+    <label>SSH Private Key</label><textarea id=ssh_private_key placeholder='ssh private key'></textarea>
+    <label>known_hosts</label><textarea id=ssh_known_hosts placeholder='known hosts'></textarea>
   </details>
+
   <button id=saveCluster>Cluster speichern</button>
   <button id=closeSettings style="background:#334155">Schließen</button>
   <pre id=settingsOut></pre>
@@ -106,7 +140,7 @@ async function renderApp(){
     document.getElementById('suggestVip').onclick=()=>{const s=(node_ip.value||'10.0.0.11').split('.').slice(0,3).join('.')+'.50'; vip_address.value=s;};
     document.getElementById('testPeer').onclick=async()=>{const [,d]=await api('/api/cluster/test-peer',{method:'POST',body:'{}'}); settingsOut.textContent=JSON.stringify(d,null,2)};
     document.getElementById('saveCluster').onclick=async()=>{
-      const body={node_id:node_id.value,node_ip:node_ip.value,peer_node_ip:peer_node_ip.value,vip_address:vip_address.value,vrrp_priority:parseInt(vrrp_priority.value,10),cluster_mode:cluster_mode.value,master_api_url:master_api_url.value||null,master_api_token:master_api_token.value||null,peer_ssh_user:peer_ssh_user.value||'root',tls_crt:tls_crt.value||null,tls_key:tls_key.value||null,ssh_private_key:ssh_private_key.value||null,ssh_known_hosts:ssh_known_hosts.value||null};
+      const body={node_id:node_id.value,node_ip:node_ip.value,peer_node_ip:peer_node_ip.value,vip_address:vip_address.value,vrrp_priority:parseInt(vrrp_priority.value,10),cluster_mode:cluster_mode.value,master_api_url:master_api_url.value||null,master_api_token:master_api_token.value||null,peer_ssh_user:peer_ssh_user.value||'root',reject_response_message:reject_response_message.value||null,tls_crt:tls_crt.value||null,tls_key:tls_key.value||null,ssh_private_key:ssh_private_key.value||null,ssh_known_hosts:ssh_known_hosts.value||null};
       const [,d]=await api('/api/cluster/settings',{method:'POST',body:JSON.stringify(body)}); settingsOut.textContent=JSON.stringify(d,null,2);
     };
   }

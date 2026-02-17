@@ -56,6 +56,7 @@ CREATE TABLE IF NOT EXISTS cluster_settings (
   master_api_url VARCHAR(255), master_api_token VARCHAR(255),
   tls_crt TEXT, tls_key TEXT, ssh_private_key TEXT, ssh_known_hosts TEXT,
   peer_ssh_user VARCHAR(64) NOT NULL DEFAULT 'root',
+  reject_response_message TEXT NOT NULL DEFAULT 'Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen.',
   updated_at TIMESTAMP NOT NULL DEFAULT NOW()
 );
 CREATE TABLE IF NOT EXISTS cluster_locks (

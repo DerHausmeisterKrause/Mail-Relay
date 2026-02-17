@@ -34,3 +34,4 @@ class ClusterSettingsRequest(BaseModel):
     ssh_private_key: str | None = None
     ssh_known_hosts: str | None = None
     peer_ssh_user: str = "root"
+    reject_response_message: str | None = None

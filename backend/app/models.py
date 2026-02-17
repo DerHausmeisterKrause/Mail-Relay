@@ -87,6 +87,7 @@ class ClusterSetting(Base):
     ssh_private_key: Mapped[str | None] = mapped_column(Text, nullable=True)
     ssh_known_hosts: Mapped[str | None] = mapped_column(Text, nullable=True)
     peer_ssh_user: Mapped[str] = mapped_column(String(64), default="root")
+    reject_response_message: Mapped[str] = mapped_column(Text, default="Relay konnte die Nachricht nicht verarbeiten. Bitte später erneut versuchen.")
     updated_at: Mapped[datetime] = mapped_column(DateTime, default=datetime.utcnow)
 
 class ClusterLock(Base):
